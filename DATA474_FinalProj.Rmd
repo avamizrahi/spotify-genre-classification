@@ -1,0 +1,313 @@
+---
+title: "DATA474_FinalProj"
+author: "Ava Mizrahi"
+date: "2026-05-05"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+```
+
+
+```{r}
+spotify <- read.csv("spotify.csv")
+dim(spotify)
+glimpse(spotify)
+summary(spotify)
+```
+
+
+```{r}
+# cleaning
+spotify <- spotify %>%
+  distinct %>%
+  mutate(
+    explicit = as.factor(explicit),
+    track_genre = as.factor(track_genre),
+    duration_min = duration_ms / 60000 )
+
+spotify <- spotify %>%
+  mutate(
+    track_genre = case_when(
+      track_genre %in% c("latin", "latino") ~ "latin_latino",
+      track_genre %in% c("reggae", "reggaeton") ~ "reggae_reggaeton",
+      track_genre %in% c("dub", "dubstep") ~ "dub_dubstep",
+      track_genre %in% c("singer-songwriter", "songwriter") ~ "singer_songwriter",
+      track_genre %in% c("punk", "punk-rock") ~ "punk",
+      track_genre %in% c("indie", "indie-pop") ~ "indie",
+      track_genre %in% c("minimal-techno", "techno") ~ "techno",
+      track_genre %in% c("pop", "pop-film") ~ "pop",
+      TRUE ~ as.character(track_genre)))
+
+spotify$track_genre <- as.factor(spotify$track_genre)
+
+```
+
+```{r}
+summary(spotify)
+```
+
+
+
+
+
+```{r}
+library(nnet)
+
+set.seed(1)
+
+train_index <- sample(1:nrow(spotify), 0.7 * nrow(spotify))
+
+train_data <- spotify[train_index, ]
+test_data <- spotify[-train_index, ]
+genre_model <- multinom(
+  track_genre ~ popularity + explicit + danceability + energy + key + mode + speechiness + acousticness + instrumentalness + liveness + valence + tempo + time_signature + duration_min, data = train_data, MaxNWts = 5000, maxit = 500)
+```
+
+
+```{r}
+# Grouping top 5 popular grenres
+spotify %>%
+  group_by(track_genre) %>%
+  summarise(avg_pop = mean(popularity, na.rm = TRUE)) %>%
+  slice_max(order_by = avg_pop, n=5)
+
+# Grouping middle 5 popular genres
+spotify %>%
+  group_by(track_genre) %>%
+  summarise(median_pop = median(popularity, na.rm = TRUE)) %>%
+  arrange(desc(median_pop)) %>%
+  mutate(rank = row_number(), total = n()) %>%
+  filter(rank >= (total/2 - 2) & rank <= (total/2 + 2))
+
+# Grouping least 5 popular genres
+spotify %>%
+  group_by(track_genre) %>%
+  summarise(avg_pop = mean(popularity, na.rm = TRUE)) %>%
+  arrange(avg_pop) %>%
+  head(5)
+```
+
+
+```{r}
+
+odds_table <- as.data.frame(exp(coef(genre_model)))
+
+odds_table$genre <- rownames(odds_table)
+
+odds_table <- odds_table %>%
+  select(genre, everything())
+
+odds_long <- odds_table %>%
+  pivot_longer(cols = -genre, names_to = "characteristic", values_to = "odds_ratio") %>%
+  filter(characteristic != "(Intercept)") %>%
+  mutate(effect_strength = abs(log(odds_ratio)), direction = ifelse(odds_ratio > 1, "increases odds", "decreases odds"))
+```
+
+
+```{r}
+# Top 5 genres odds ratios
+selected_genres_top <- c("k-pop", "chill", "pop", "sad", "grunge")
+
+selected_odds <- odds_table %>%
+  filter(genre %in% selected_genres_top)
+
+selected_odds
+```
+
+
+```{r}
+# Middle 5 genres odds ratios
+selected_genres_middle <- c("german", "garage", "children", "ska", "cantopop")
+
+selected_odds <- odds_table %>%
+  filter(genre %in% selected_genres_middle)
+
+selected_odds
+```
+
+```{r}
+# Least 5 genres odds ratios
+selected_genres_low <- c("iranian", "romance", "classical", "detroit-techno", "chicago-house")
+selected_odds <- odds_table %>%
+  filter(genre %in% selected_genres_low)
+
+selected_odds
+```
+
+
+```{r}
+# Which characteristic have the best predictability
+odds_long %>%
+  group_by(characteristic) %>%
+  summarise(avg_strength = mean(effect_strength)) %>%
+  arrange(desc(avg_strength))
+```
+
+
+
+```{r}
+# pseudo R-squared
+null_model <- multinom(track_genre ~ 1, data = train_data, trace = FALSE)
+
+1 - (deviance(genre_model) / deviance(null_model))
+```
+
+
+
+```{r}
+library(caret)
+
+# predictions
+pred_genre <- predict(genre_model, newdata = test_data)
+
+# confusion matrix
+cm <- confusionMatrix(data = pred_genre, reference = test_data$track_genre)
+cm
+```
+
+
+
+```{r}
+# precision and F1
+metrics <- as.data.frame(cm$byClass)
+
+metrics_summary <- metrics %>%
+  summarise(avg_precision = mean(Precision, na.rm = TRUE), avg_f1 = mean(F1, na.rm = TRUE))
+
+metrics_summary
+```
+
+Model performance:
+Accuracy: 20.6%
+Precision	17.5%
+F1-score	18.7%
+
+
+Conclusions:
+- model has 20.6% accuracy, which is better than randomly guessing (.94%)
+- pseudo-R^2 was 0.281, meaning the model improved over a baseline model with no predictors
+- some genres are easier to classify (distinctive genres were predicted better because they have more unique audio features)
+- similar genres get confused because they overlap a lot
+
+
+
+
+```{r}
+# 20 most popular genres
+top_20_popular <- spotify %>%
+  group_by(track_genre) %>%
+  summarise(avg_popularity = mean(popularity, na.rm = TRUE)) %>%
+  arrange(desc(avg_popularity)) %>%
+  slice_head(n = 20) %>%
+  pull(track_genre)
+
+spotify_top20 <- spotify %>%
+  filter(track_genre %in% top_20_popular) %>%
+  droplevels()
+```
+
+```{r}
+library(nnet)
+
+set.seed(1)
+
+train_index <- sample(1:nrow(spotify_top20), 0.7 * nrow(spotify_top20))
+
+train_data <- spotify_top20[train_index, ]
+test_data <- spotify_top20[-train_index, ]
+
+genre_model_top20 <- multinom(
+  track_genre ~ popularity + explicit + danceability + energy + key + mode + speechiness + acousticness + instrumentalness + liveness + valence + tempo + time_signature + duration_min,
+  data = train_data,
+  MaxNWts = 5000,
+  maxit = 500
+)
+```
+
+
+```{r}
+# Predictability 
+pred_top20 <- predict(genre_model_top20, newdata = test_data)
+
+mean(pred_top20 == test_data$track_genre)
+```
+
+```{r}
+# Odds ratios
+odds_table_top20 <- as.data.frame(exp(coef(genre_model_top20)))
+
+odds_table_top20$genre <- rownames(odds_table_top20)
+
+odds_table_top20 <- odds_table_top20 %>%
+  select(genre, everything())
+
+odds_long_top20 <- odds_table_top20 %>%
+  pivot_longer(cols = -genre, names_to = "characteristic", values_to = "odds_ratio") %>%
+  filter(characteristic != "(Intercept)") %>%
+  mutate(effect_strength = abs(log(odds_ratio)))
+
+odds_long_top20 %>%
+  group_by(characteristic) %>%
+  summarise(avg_strength = mean(effect_strength)) %>%
+  arrange(desc(avg_strength))
+```
+
+```{r}
+# Psuedo R squared
+null_model_top20 <- multinom(track_genre ~ 1, data = train_data, trace = FALSE)
+
+1 - (deviance(genre_model_top20) / deviance(null_model_top20))
+```
+
+```{r}
+# Confusion Matrix
+library(caret)
+
+pred_top20 <- predict(genre_model_top20, newdata = test_data)
+
+cm_top20 <- confusionMatrix(data = pred_top20, reference = test_data$track_genre)
+
+cm_top20
+```
+
+```{r}
+# Precision and F1
+metrics_top20 <- as.data.frame(cm_top20$byClass)
+
+metrics_top20 %>%
+  summarise(
+    avg_precision = mean(Precision, na.rm = TRUE),
+    avg_f1 = mean(F1, na.rm = TRUE)
+  )
+```
+
+Top 20 model performance:
+Accuracy: 33.2%
+Precision: 32.2%
+F1: 30.5%
+Pseduo R^2: 0.323
+Predicted well: metalcore, pagode, ambient, mandopop, sertanejo 
+predicted poorly: anime, indian, k-pop, electronic 
+
+
+```{r}
+# Comparing top 20 model to full model
+model_comparison_table <- tibble(
+  Model = c("All Genres Model", "Top 20 Genres Model"), Accuracy = c(20.6, 33.2), Precision = c(17.5, 32.2), F1_Score = c(18.7, 30.5), Pseudo_R2 = c(28.1, 32.3))
+
+model_comparison
+```
+
+
+
+
+

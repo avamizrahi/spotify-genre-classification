@@ -1,0 +1,176 @@
+---
+title: "DATA_Final_Proj_LogisticReg"
+author: "Ava Mizrahi"
+date: "2026-05-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+
+```{r}
+spotify <- read.csv("spotify.csv")
+dim(spotify)
+glimpse(spotify)
+summary(spotify)
+```
+
+```{r}
+# cleaning
+spotify <- spotify %>%
+  distinct() %>%
+  mutate(
+    explicit = as.factor(explicit),
+    track_genre = as.factor(track_genre),
+    duration_min = duration_ms / 60000 )
+
+spotify <- spotify %>%
+  mutate(
+    track_genre = case_when(
+      track_genre %in% c("metal", "metalcore") ~ "metal",
+      track_genre %in% c("deep-house", "electronic", "progressive-house") ~ "electronic_house",
+      track_genre %in% c("minimal-techno", "techno") ~ "techno",
+      track_genre %in% c("pop", "pop-film") ~ "pop",
+      TRUE ~ as.character(track_genre)))
+
+# 20 most popular genres
+top_20_popular <- spotify %>%
+  group_by(track_genre) %>%
+  summarise(avg_popularity = mean(popularity, na.rm = TRUE)) %>%
+  arrange(desc(avg_popularity)) %>%
+  slice_head(n = 20) %>%
+  pull(track_genre)
+
+spotify_top20 <- spotify %>%
+  filter(track_genre %in% top_20_popular) %>%
+  mutate(track_genre = factor(track_genre))
+
+```
+
+```{r}
+summary(spotify)
+```
+
+```{r}
+# checking for distinctness in genres 
+top20_summary <- spotify_top20 %>%
+  group_by(track_genre) %>%
+  summarise(
+    danceability = mean(danceability),
+    energy = mean(energy),
+    acousticness = mean(acousticness),
+    speechiness = mean(speechiness),
+    instrumentalness = mean(instrumentalness),
+    valence = mean(valence),
+    tempo = mean(tempo)
+  )
+
+top20_summary
+```
+
+
+
+```{r}
+# multinomial logistic regression
+library(nnet)
+
+set.seed(1)
+
+train_index <- sample(1:nrow(spotify_top20), 0.7 * nrow(spotify_top20))
+
+train_data <- spotify_top20[train_index, ]
+test_data <- spotify_top20[-train_index, ]
+
+genre_model_top20 <- multinom(
+  track_genre ~ popularity + explicit + danceability + energy + key + mode + speechiness + acousticness + instrumentalness + liveness + valence + tempo + time_signature + duration_min,
+  data = train_data,
+  MaxNWts = 5000,
+  maxit = 500
+)
+```
+
+
+```{r}
+# Predictability 
+pred_top20 <- predict(genre_model_top20, newdata = test_data)
+
+mean(pred_top20 == test_data$track_genre)
+```
+
+
+```{r}
+# Odds ratios
+odds_table_top20 <- as.data.frame(exp(coef(genre_model_top20)))
+
+odds_table_top20$genre <- rownames(odds_table_top20)
+
+odds_table_top20 <- odds_table_top20 %>%
+  select(genre, everything())
+
+odds_long_top20 <- odds_table_top20 %>%
+  pivot_longer(cols = -genre, names_to = "characteristic", values_to = "odds_ratio") %>%
+  filter(characteristic != "(Intercept)") %>%
+  mutate(effect_strength = abs(log(odds_ratio)))
+
+odds_long_top20 %>%
+  group_by(characteristic) %>%
+  summarise(avg_strength = mean(effect_strength)) %>%
+  arrange(desc(avg_strength))
+```
+
+```{r}
+# Pseudo R squared
+null_model_top20 <- multinom(track_genre ~ 1, data = train_data, trace = FALSE)
+
+1 - (deviance(genre_model_top20) / deviance(null_model_top20))
+```
+
+```{r}
+# Confusion Matrix
+library(caret)
+
+pred_top20 <- factor(pred_top20, levels = levels(test_data$track_genre))
+
+cm_top20 <- confusionMatrix(
+  data = pred_top20,
+  reference = test_data$track_genre
+)
+cm_top20
+```
+
+```{r}
+# Precision and F1
+metrics_top20 <- as.data.frame(cm_top20$byClass)
+
+metrics_top20 %>%
+  summarise(avg_precision = mean(Precision, na.rm = TRUE), avg_f1 = mean(F1, na.rm = TRUE))
+```
+
+
+This model used multinomial logistic regression to classify spotify songs into the 20 genres with the highest average popularity (24,000 songs). Similar genres were combined prior to modeling to reduce overlap. Instrumentalness, speechiness, energy, danceability, and acousticness are the top 5 strongest predictors of genre. Audio texture and style features are more useful for genre classification than musical attributes like key, tempo, or popularity. 
+
+The model achieved:
+- 35.69% accuracy
+- 29.9976% precision
+- 27.82% F1 Score
+- .308 pseudo R squared
+
+Genres such as metal, electronic house, ambient, and sertanejo were easier to classify because they have more distinct audio features. Broader genres like pop were more difficult to distinguish. 
+
+
+
+
+
+
+
+
+
+

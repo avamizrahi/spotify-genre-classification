@@ -1,0 +1,300 @@
+---
+title: "Final Project data 474"
+author: "Serena Smith"
+date: "2026-05-06"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(car)
+library(dplyr)
+```
+
+```{r}
+spotify <- read.csv("spotify.csv")
+```
+
+```{r}
+spotify <- spotify %>%
+  distinct %>%
+  mutate(
+    explicit = as.factor(explicit),
+    track_genre = as.factor(track_genre),
+    duration_min = duration_ms / 60000 , # makes duration easier to understand and closer in value to other predictors
+    duration_ms = NULL ,
+    X = NULL)
+    #remove artists, album_name, track_id, and track_name later, or at least ignore during model selection
+glimpse(spotify)
+```
+
+```{r}
+showgenre <- spotify %>% 
+  filter(track_name == "Unholy (feat. Kim Petras)")
+showgenre$track_genre
+```
+A problem is immediately apparent: songs can be doubly-classified. The most popular song, Unholy by Sam Smith, is classified as both dance and pop. This data set has 1000 songs per genre, 114 genres, and 14 predictors (not including popularity or track_genre).
+
+```{r}
+unique(spotify$track_genre)
+```
+```{r}
+same_song_genres <- spotify %>%
+  group_by(track_id, track_name, artists) %>%
+  summarise(
+    genre_count = n_distinct(track_genre),
+    genres = paste(sort(unique(track_genre)), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  filter(genre_count > 1) %>%
+  arrange(desc(genre_count))
+
+same_song_genres %>%
+  count(genres, sort = TRUE)
+```
+In the interest of not spending 10 minutes running code as we build our models, we will focus on the top 20 most popular genres in the dataset. I will look at the top 25 first in case I need to drop any genres.
+```{r}
+mostpopular <- spotify %>% 
+  group_by(track_genre) %>% 
+  summarize(total_popularity = sum(popularity)) %>% 
+  arrange(desc(total_popularity))
+
+list(head(mostpopular$track_genre, 25))
+```
+Ideally, songs should only belong to one genre so that observations are distinct and genres can be separated. Notice the overlap between "sad" with both "chill" and "emo". Let's check if "sad" overlaps with any other top 20 genres.
+```{r}
+top25genres <- c("pop-film", "k-pop", "chill", "sad",  "grunge", "indian", "anime", "emo", "sertanejo", "pop", "progressive-house", "piano", "mandopop", "deep-house", "brazil", "electronic", "pagode", "ambient", "british", "metal", "metalcore", "psych-rock", "hard-rock", "acoustic", "dubstep")
+
+results <- list()
+justtop25 <- spotify %>%
+  filter(track_genre %in% top25genres)
+
+for (genre in top25genres) {
+
+  genre_tracks <- justtop25 %>%
+    filter(track_genre == genre) %>%
+    pull(track_id)
+
+  shared <- justtop25 %>%
+    filter(track_id %in% genre_tracks) %>%
+    filter(track_genre != genre) %>%
+    group_by(track_genre) %>%
+    summarize(shared_songs = n_distinct(track_id)) %>%
+    arrange(desc(shared_songs))
+
+  results[[genre]] <- shared
+}
+```
+
+```{r}
+results
+```
+
+```{r}
+sharedfunction <- function(hello){
+  tracks <- spotify %>%
+  filter(track_genre == hello) %>%
+  pull(track_id)
+shared <- spotify %>%
+  filter(track_id %in% tracks) %>%
+  filter(track_genre != hello) %>%
+  group_by(track_genre) %>%
+  summarize(shared_songs = n_distinct(track_id)) %>%
+  arrange(desc(shared_songs))
+shared
+}
+```
+Okay, its getting complicated. But let's start with cutting down "sad", since it includes "chill" 274 times, "emo" 171 times, and "anime" 15 times. These three genres are very distinct and cross listing them with "sad" would severly weaken the predictive power of our model. Shown below, there are many tracks in the dataset that are only listed as "sad", so it seems that the "sad" genre exists and is distinct from the other 114 genres in the set.
+```{r}
+sharedfunction("sad")
+```
+ Therefore, we will remove the "emo" and "chill" tracks from "sad". We will keep the "anime" tracks, because there are only 15 and "anime" itself is a very broad and poorly defined genre.
+
+What even is "pop-film" anyways?
+```{r}
+sharedfunction("pop-film")
+```
+It's a lot of things, apparently. What songs are both "pop-film" and "pop"?
+```{r}
+pop_film_tracks <- spotify %>%
+  filter(track_genre == "pop-film") %>%
+  pull(track_id)
+
+pop_tracks <- spotify %>%
+  filter(track_genre == "pop") %>%
+  pull(track_id)
+
+shared_tracks <- intersect(pop_film_tracks, pop_tracks)
+
+spotify %>%
+  filter(track_id %in% shared_tracks) %>%
+  distinct(track_id, track_name)
+```
+Manually going through the songs on this list shows that pretty much all of these are from Bollywood/Indian films. Pop-film, at least according to the spotify algorithm, seems to be its own genre comprised of popular Bollywood songs. For this reason, we will remove pop-film songs from pop to increase distinctness between groups. We'll retain Indian as a separate genre, because this includes traditional and folk Indian music not included in pop-film.
+```{r}
+##### run this to remove "pop-film" tracks from "pop"
+#spotify <- spotify %>%
+#  filter(track_genre == "pop") %>%
+#  filter(!track_id %in% spotify$track_id[spotify$track_genre == "pop-film"])
+```
+Next, let's look at British. What makes a song "British"?
+```{r}
+sharedfunction(hello = "british")
+```
+There are 33 rows here; it does not look like there is a unified "British sound." Since there is so much overlap between psych-rock (#22 in popularity) and british, we're going to replace it with psych-rock, since psych rock will likely be more consistent between songs than british.
+
+Finally, we'll look at grunge (#5 in popularity) and metal (#20).
+```{r}
+results[c("metal", "grunge")]
+```
+Hard-rock (#23) and metalcore (#21) also overlap significantly with metal (#20), but do not significantly overlap with grunge (#5). For this reason, we will replace metal with the next most popular but more distinct genre, metalcore, when we build our models.
+```{r}
+finaltop20 <- c("pop-film", "k-pop", "chill", "sad",  "grunge", "indian", "anime", "emo", "sertanejo", "pop", "progressive-house", "piano", "mandopop", "deep-house", "brazil", "electronic", "pagode", "ambient", "psych-rock", "metalcore")
+# final top20 genres do not include british or metal anymore
+
+spotify_clean <- spotify %>%
+  filter(track_genre %in% finaltop20)
+
+pop_film_ids <- spotify %>%
+  filter(track_genre == "pop-film") %>%
+  pull(track_id)
+
+sad_ids <- spotify %>%
+  filter(track_genre == "sad") %>%
+  pull(track_id)
+
+spotify_clean <- spotify_clean %>%
+  filter(
+    !(track_genre == "pop" & track_id %in% pop_film_ids),
+    !(track_genre == "emo" & track_id %in% sad_ids),
+    !(track_genre == "chill" & track_id %in% sad_ids)
+  )
+
+spotify <- spotify_clean #rename 
+glimpse(spotify)
+
+# Optional for each group member if they want to manually remove track_id, artists_name, and track_name in their code
+```
+
+
+```{r}
+# checking for distinctness in genres 
+top20_summary <- spotify_top20 %>%
+  group_by(track_genre) %>%
+  summarise(
+    danceability = mean(danceability),
+    energy = mean(energy),
+    acousticness = mean(acousticness),
+    speechiness = mean(speechiness),
+    instrumentalness = mean(instrumentalness),
+    valence = mean(valence),
+    tempo = mean(tempo)
+  )
+
+top20_summary
+```
+
+
+
+```{r}
+# multinomial logistic regression
+library(nnet)
+
+set.seed(1)
+
+train_index <- sample(1:nrow(spotify), 0.7 * nrow(spotify))
+
+train_data <- spotify[train_index, ]
+test_data <- spotify[-train_index, ]
+
+genre_model_top20 <- multinom(
+  track_genre ~ popularity + explicit + danceability + energy + key + mode + speechiness + acousticness + instrumentalness + liveness + valence + tempo + time_signature + duration_min,
+  data = train_data,
+  MaxNWts = 5000,
+  maxit = 500
+)
+```
+
+
+```{r}
+# Predictability 
+pred_top20 <- predict(genre_model_top20, newdata = test_data)
+
+accuracy_top20 <- mean(
+  as.character(pred_top20) == as.character(test_data$track_genre)
+)
+
+accuracy_top20
+```
+
+
+```{r}
+# Odds ratios
+odds_table_top20 <- as.data.frame(exp(coef(genre_model_top20)))
+
+odds_table_top20$genre <- rownames(odds_table_top20)
+
+odds_table_top20 <- odds_table_top20 %>%
+  select(genre, everything())
+
+odds_long_top20 <- odds_table_top20 %>%
+  pivot_longer(cols = -genre, names_to = "characteristic", values_to = "odds_ratio") %>%
+  filter(characteristic != "(Intercept)") %>%
+  mutate(effect_strength = abs(log(odds_ratio)))
+
+odds_long_top20 %>%
+  group_by(characteristic) %>%
+  summarise(avg_strength = mean(effect_strength)) %>%
+  arrange(desc(avg_strength))
+```
+
+```{r}
+# Pseudo R squared
+null_model_top20 <- multinom(track_genre ~ 1, data = train_data, trace = FALSE)
+
+1 - (deviance(genre_model_top20) / deviance(null_model_top20))
+```
+
+```{r}
+# Confusion Matrix
+library(caret)
+
+pred_top20 <- factor(pred_top20, levels = levels(test_data$track_genre))
+
+cm_top20 <- confusionMatrix(
+  data = pred_top20,
+  reference = test_data$track_genre
+)
+cm_top20
+```
+
+```{r}
+# Precision and F1
+metrics_top20 <- as.data.frame(cm_top20$byClass)
+
+metrics_top20 %>%
+  summarise(avg_precision = mean(Precision, na.rm = TRUE), avg_f1 = mean(F1, na.rm = TRUE))
+```
+
+
+This model used multinomial logistic regression to classify spotify songs into the 20 genres with the highest average popularity (24,000 songs). Similar genres were combined prior to modeling to reduce overlap. Instrumentalness, speechiness, energy, danceability, and acousticness are the top 5 strongest predictors of genre. Audio texture and style features are more useful for genre classification than musical attributes like key, tempo, or popularity. 
+
+The model achieved:
+- 35.69% accuracy
+- 29.9976% precision
+- 27.82% F1 Score
+- .308 pseudo R squared
+
+Genres such as metal, electronic house, ambient, and sertanejo were easier to classify because they have more distinct audio features. Broader genres like pop were more difficult to distinguish. 
+
+
+
+
+
+
+
+
+
+
+
+
